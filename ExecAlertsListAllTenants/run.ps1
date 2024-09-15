@@ -4,13 +4,13 @@ param( $QueueItem, $TriggerMetadata)
 # Write out the queue message and metadata to the information log.
 Write-Host "PowerShell queue trigger function processed work item: $QueueItem"
 
-Get-Tenants | ForEach-Object -Parallel { 
+Get-Tenants | ForEach-Object -Parallel {
     $domainName = $_.defaultDomainName
-    Import-Module '.\GraphHelper.psm1'
+    Import-Module CIPPCore
     $Table = Get-CIPPTable -TableName 'cachealertsandincidents'
 
     try {
-        $Alerts = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/security/alerts' -tenantid $domainName 
+        $Alerts = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/security/alerts' -tenantid $domainName
         foreach ($Alert in $Alerts) {
             $GUID = (New-Guid).Guid
             $alertJson = $Alert | ConvertTo-Json
@@ -20,15 +20,14 @@ Get-Tenants | ForEach-Object -Parallel {
                 Tenant       = $domainName
                 PartitionKey = 'alert'
             }
-            Add-AzDataTableEntity @Table -Entity $GraphRequest -Force | Out-Null
+            Add-CIPPAzDataTableEntity @Table -Entity $GraphRequest -Force | Out-Null
 
         }
 
-    }
-    catch {
+    } catch {
         $GUID = (New-Guid).Guid
         $AlertText = ConvertTo-Json -InputObject @{
-            Title             = "Could not connect to tenant to retrieve data: $($_.Exception.Message)" 
+            Title             = "Could not connect to tenant to retrieve data: $($_.Exception.Message)"
             Id                = ''
             Category          = ''
             EventDateTime     = ''
@@ -36,17 +35,17 @@ Get-Tenants | ForEach-Object -Parallel {
             Status            = ''
             userStates        = @('None')
             vendorInformation = @{
-                vendor   = "CIPP"
-                provider = "CIPP"
+                vendor   = 'CIPP'
+                provider = 'CIPP'
             }
         }
         $GraphRequest = @{
-            Alert        = [string]$AlertText 
+            Alert        = [string]$AlertText
             RowKey       = [string]$GUID
             PartitionKey = 'alert'
             Tenant       = $domainName
         }
-        Add-AzDataTableEntity @Table -Entity $GraphRequest -Force | Out-Null
+        Add-CIPPAzDataTableEntity @Table -Entity $GraphRequest -Force | Out-Null
 
 
     }

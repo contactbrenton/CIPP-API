@@ -1,28 +1,30 @@
 # Input bindings are passed in via param block.
 param($Timer)
 
-# Get the current universal time in the default string format.
-$currentUTCtime = (Get-Date).ToUniversalTime()
-
-$Table = Get-CIPPTable -TableName cpvtenants
-$CPVRows = Get-AzDataTableEntity @Table
-
-$Tenants = get-tenants
-
-foreach ($Row in $Tenants ) {
-    Write-Host "Processing tenants"
-    if (!($CPVRows)) {
-        "No list available"
-        Push-OutputBinding -Name Msg -Value $row.customerId
+try {
+    $Tenants = Get-Tenants -IncludeAll | Where-Object { $_.customerId -ne $env:TenantID -and $_.Excluded -eq $false }
+    $CPVTable = Get-CIPPTable -TableName cpvtenants
+    $CPVRows = Get-CIPPAzDataTableEntity @CPVTable
+    $ModuleRoot = (Get-Module CIPPCore).ModuleBase
+    $SAMManifest = Get-Item -Path "$ModuleRoot\Public\SAMManifest.json"
+    $AdditionalPermissions = Get-Item -Path "$ModuleRoot\Public\AdditionalPermissions.json"
+    $Tenants = $Tenants | ForEach-Object {
+        $CPVRow = $CPVRows | Where-Object -Property Tenant -EQ $_.customerId
+        if (!$CPVRow -or $env:ApplicationID -notin $CPVRow.applicationId -or $SAMManifest.LastWriteTime.ToUniversalTime() -gt $CPVRow.Timestamp.DateTime -or $AdditionalPermissions.LastWriteTime.ToUniversalTime() -ge $CPVRow.Timestamp.DateTime -or $CPVRow.Timestamp.DateTime -le (Get-Date).AddDays(-7).ToUniversalTime() -or !$_.defaultDomainName) {
+            $_
+        }
     }
-
-    if (!($CPVRows | Where-Object { $row.customerId -In $CPVRows.Tenant })) {
-        "Not in the list: $($row.customerId)"
-        Push-OutputBinding -Name Msg -Value $row.customerId
+    $TenantCount = ($Tenants | Measure-Object).Count
+    if ($TenantCount -gt 0) {
+        $Queue = New-CippQueueEntry -Name 'Update Permissions' -TotalTasks $TenantCount
+        $TenantBatch = $Tenants | Select-Object defaultDomainName, customerId, displayName, @{n = 'FunctionName'; exp = { 'UpdatePermissionsQueue' } }, @{n = 'QueueId'; exp = { $Queue.RowKey } }
+        $InputObject = [PSCustomObject]@{
+            OrchestratorName = 'UpdatePermissionsOrchestrator'
+            Batch            = @($TenantBatch)
+        }
+        $InstanceId = Start-NewOrchestration -FunctionName 'CIPPOrchestrator' -InputObject ($InputObject | ConvertTo-Json -Depth 5 -Compress)
+        Write-Host "Started permissions orchestration with ID = '$InstanceId'"
+    } else {
+        Write-Host 'No tenants require permissions update'
     }
-
-    if ($CPVRows | Where-Object { $_.Tenant -eq $row.customerId } | Where-Object { $_.LastApply -EQ $null -or $_.LastApply -lt (Get-Date).AddDays(-14) }) {
-        Write-Host "In list, Old age."
-        Push-OutputBinding -Name Msg -Value $row.customerId
-    }
-}
+} catch {}
